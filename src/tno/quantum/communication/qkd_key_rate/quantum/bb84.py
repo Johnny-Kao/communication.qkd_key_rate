@@ -980,11 +980,14 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
             target_vacuum=1,
             target_single=1
             - h(
-                error_rate_single_photon_basis_Z
-                + delta(
-                    n_X_observed,
-                    n_Z_observed,
-                    epsilon_single_photon,
+                np.minimum(
+                    error_rate_single_photon_basis_Z
+                    + delta(
+                        n_X_observed,
+                        n_Z_observed,
+                        epsilon_single_photon,
+                    ),
+                    0.5,
                 )
             ),
             probabilities_intensity_j=probability_basis_X_normalized,
@@ -1014,11 +1017,14 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
             - number_single_events_basis_X
             * (
                 h(
-                    error_rate_single_photon_basis_Z
-                    + delta(
-                        n_X_observed,
-                        n_Z_observed,
-                        epsilon_1,
+                    np.minimum(
+                        error_rate_single_photon_basis_Z
+                        + delta(
+                            n_X_observed,
+                            n_Z_observed,
+                            epsilon_1,
+                        ),
+                        0.5,
                     )
                 )
             )
