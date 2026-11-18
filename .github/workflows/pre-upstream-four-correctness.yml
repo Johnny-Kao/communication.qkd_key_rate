@@ -1,0 +1,96 @@
+name: QKD v2.0.5 four-issue pre-upstream verification
+
+on:
+  push:
+    branches:
+      - staging/qkd-v205-four-correctness-prepr
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install original dependencies and capture versions
+        run: |
+          python -m pip install -e '.[tests]'
+          python -m pip freeze | tee pip_freeze.log
+          git diff --check 7266c35
+          git diff --stat 7266c35 | tee staged_diff_stat.log
+      - name: Full suite on staged fixes
+        run: |
+          set +e
+          python -m pytest -q | tee staged_full_suite.log
+          echo "${PIPESTATUS[0]}" > staged_full_suite.rc
+          exit 0
+      - name: Full official v2.0.5 baseline for comparison
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/qkd-v205-baseline" 7266c35
+          set +e
+          (cd "$RUNNER_TEMP/qkd-v205-baseline" && PYTHONPATH="$RUNNER_TEMP/qkd-v205-baseline/src" python -m pytest -q) | tee official_baseline_suite.log
+          echo "${PIPESTATUS[0]}" > official_baseline_suite.rc
+          exit 0
+      - name: Confirm three fixes are RED on original source
+        run: |
+          set +e
+          base="$RUNNER_TEMP/qkd-v205-baseline"
+          for subsystem in detector bbm92 winnow; do
+            case "$subsystem" in
+              detector) suite='base/test_detector_consistency.py' ;;
+              bbm92) suite='quantum/test_bbm92_nx_units.py' ;;
+              winnow) suite='classical/test_winnow_discard_positions.py' ;;
+            esac
+            (cd "$base" && PYTHONPATH="$base/src" python -m pytest -q --tb=short "$GITHUB_WORKSPACE/src/tno/quantum/communication/qkd_key_rate/test/$suite") > "$GITHUB_WORKSPACE/baseline_red_${subsystem}.log" 2>&1
+            rc=$?
+            echo "$rc" > "baseline_red_${subsystem}.rc"
+            tail -n 5 "baseline_red_${subsystem}.log"
+            if [ "$rc" -ne 1 ]; then
+              echo "RED comparison for $subsystem failed to show original defect; pytest exit=$rc"
+              exit 1
+            fi
+          done
+      - name: Isolated Q02 proof-blocker status
+        run: |
+          python -m pytest -q src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_security_budget_contract.py | tee q02_contract.log
+      - name: Archive test logs and baseline/staging return codes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qkd-four-preupstream-py${{ matrix.python-version }}
+          if-no-files-found: warn
+          path: |
+            pip_freeze.log
+            staged_diff_stat.log
+            staged_full_suite.log
+            staged_full_suite.rc
+            official_baseline_suite.log
+            official_baseline_suite.rc
+            baseline_red_*.log
+            baseline_red_*.rc
+            q02_contract.log
+      - name: Report exact staged and baseline suite status
+        if: always()
+        run: |
+          staged_rc=$(cat staged_full_suite.rc)
+          baseline_rc=$(cat official_baseline_suite.rc)
+          echo "Staged native suite exit: $staged_rc" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unmodified TNO v2.0.5 native suite exit: $baseline_rc" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Q02 remains deliberately xfailed until the full security proof budget is repaired.' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$staged_rc" -ne 0 ]; then
+            echo 'Staged suite is not fully green.'
+            exit 1
+          fi
