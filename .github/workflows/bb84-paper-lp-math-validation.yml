@@ -1,0 +1,67 @@
+name: BB84 independent paper LP validation
+
+on:
+  push:
+    branches:
+      - research/bb84-paper-lp-gc-validation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paper-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Original dependencies and version evidence
+        run: |
+          python -m pip install -e '.[tests]'
+          python -m pip freeze > dependencies.txt
+          git rev-parse HEAD
+          git diff --check 77e44d6
+      - name: Run independently specified LP tests
+        run: |
+          set +e
+          python -m pytest -vv --tb=short \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_paper_lp_independent.py \
+            | tee bb84_paper_lp.log
+          printf '%s\n' "${PIPESTATUS[0]}" > bb84_paper_lp.rc
+          exit 0
+      - name: Run existing BB84 budget tests
+        run: |
+          set +e
+          python -m pytest -q \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_security_budget_contract.py \
+            | tee bb84_security_budget.log
+          printf '%s\n' "${PIPESTATUS[0]}" > bb84_security_budget.rc
+          exit 0
+      - name: Archive paper equation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bb84-paper-lp-py${{ matrix.python-version }}
+          path: |
+            dependencies.txt
+            bb84_paper_lp.log
+            bb84_paper_lp.rc
+            bb84_security_budget.log
+            bb84_security_budget.rc
+      - name: Gate independent contract
+        if: always()
+        run: |
+          paper_rc=$(cat bb84_paper_lp.rc)
+          budget_rc=$(cat bb84_security_budget.rc)
+          echo "Paper contract exit=$paper_rc; budget contract exit=$budget_rc" >> "$GITHUB_STEP_SUMMARY"
+          test "$paper_rc" -eq 0 && test "$budget_rc" -eq 0
