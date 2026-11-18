@@ -622,5 +622,49 @@ class BBM92FiniteKeyRateEstimate(FiniteKeyRateEstimate):
                     args["attenuation"] += 1e-8
                     continue
                 return self._extract_parameters(res.x), float(rate)
+        # trust-constr can satisfy its stopping criterion at a negative
+        # key-rate even when positive solutions exist. Keep the existing fast
+        # path, but recover with a different constrained optimizer instead of
+        # concluding that the physical problem has no feasible key.
+        alternative = scipy.optimize.minimize(
+            self._f,
+            x0.copy(),
+            args={"attenuation": attenuation},
+            constraints=constraint,
+            bounds=bounds,
+            method="SLSQP",
+            jac="2-point",
+            options={"maxiter": 1000, "ftol": 1e-12},
+        )
+        candidate = np.asarray(alternative.x, dtype=float)
+        candidate_rate = float(np.atleast_1d(-alternative.fun)[0])
+        tolerance = 1e-7
+        if (
+            alternative.success
+            and np.isfinite(candidate).all()
+            and np.isfinite(candidate_rate)
+            and np.all(candidate >= lower_bound - tolerance)
+            and np.all(candidate <= upper_bound + tolerance)
+            and abs(candidate[1] + candidate[2] - 1) <= tolerance
+            and candidate_rate >= 0
+        ):
+            # Independently verify the rate on the original attenuation.
+            verified_rate = float(
+                self.compute_rate(
+                    mu=np.array([candidate[0]]),
+                    attenuation=attenuation,
+                    probability_basis_X=np.array([candidate[1]]),
+                    probability_basis_Z=np.array([candidate[2]]),
+                )
+            )
+            if (
+                np.isfinite(verified_rate)
+                and verified_rate >= 0
+                and np.isclose(
+                    candidate_rate, verified_rate, rtol=1e-7, atol=1e-12
+                )
+            ):
+                return self._extract_parameters(candidate), verified_rate
+
         error_msg = "Unable to find solution for optimal key rate."
         raise OptimizationError(error_msg)
