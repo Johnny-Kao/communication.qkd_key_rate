@@ -29,16 +29,20 @@ jobs:
         run: |
           git log -1 --format='%H %s'
           python -c "from tno.quantum.communication.qkd_key_rate import __version__; print(__version__)"
+      - name: Capture all dependency versions
+        run: python -m pip freeze | tee installed_dependencies.log
       - name: Full native baseline tests (single run)
-        continue-on-error: true  # Preserve genuine Linux failures; do not skip the candidate batch.
         run: |
-          set -o pipefail
+          set +e
           python -m pytest -q | tee native_suite.log
+          echo "${PIPESTATUS[0]}" > native_suite_rc.txt
+          exit 0  # Never skip the research probes because native tests fail.
       - name: Repeat optimizer-sensitive BBM92 native test
-        continue-on-error: true
         run: |
-          set -o pipefail
+          set +e
           python -m pytest -q src/tno/quantum/communication/qkd_key_rate/test/classical/test_required_linktime.py | tee bbm92_repeat.log
+          echo "${PIPESTATUS[0]}" > bbm92_repeat_rc.txt
+          exit 0
       - name: Run all 17 existing anomaly probes
         run: |
           set -o pipefail
@@ -59,4 +63,18 @@ jobs:
             crossmodule_v205.log
             native_suite.log
             bbm92_repeat.log
+            native_suite_rc.txt
+            bbm92_repeat_rc.txt
+            installed_dependencies.log
           if-no-files-found: warn
+      - name: Set truthful final CI result from native test exit codes
+        if: always()
+        run: |
+          native_rc=$(cat native_suite_rc.txt)
+          bbm92_rc=$(cat bbm92_repeat_rc.txt)
+          echo "Native complete suite exit code: $native_rc" >> "$GITHUB_STEP_SUMMARY"
+          echo "Repeated BBM92 suite exit code: $bbm92_rc" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$native_rc" -ne 0 ] || [ "$bbm92_rc" -ne 0 ]; then
+            echo 'Full test verification is NOT green even when all research probes execute.'
+            exit 1
+          fi
