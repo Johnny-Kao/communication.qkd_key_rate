@@ -376,14 +376,19 @@ def solve_finite_lp(  # noqa: PLR0913, PLR0917
     # Below, constraints are defined. The first two letters of the variables
     # define the type of constraint: lb = lower bound, ub = upper bound, eq = equality
     # Constraints on the number of $m$ photon states per intensity $j$
-    lb_num_photons_m_given_intensity_j_lhs = -np.hstack(
-        (probability_intensity_j_given_m_photon_state, np.eye(number_of_intensities))
+    # Paper Eqs. (54)-(56): the finite model can account for fewer events
+    # than observed because omitted >M-photon states contribute nonnegative
+    # detections. With T_j the truncated model and d_j the Hoeffding
+    # deviation, T_j <= observed_j + d_j <= T_j + lambda.
+    # Thus T_j - d_j <= observed_j and -T_j + d_j <= -observed_j + lambda.
+    lb_num_photons_m_given_intensity_j_lhs = np.hstack(
+        (probability_intensity_j_given_m_photon_state, -np.eye(number_of_intensities))
     )
-    lb_num_photons_m_given_intensity_j_rhs = -observed_count
+    lb_num_photons_m_given_intensity_j_rhs = observed_count
     ub_num_photons_m_given_intensity_j_lhs = np.hstack(
-        (probability_intensity_j_given_m_photon_state, np.eye(number_of_intensities))
+        (-probability_intensity_j_given_m_photon_state, np.eye(number_of_intensities))
     )
-    ub_num_photons_m_given_intensity_j_rhs = observed_count + lambda_num_photons_cut
+    ub_num_photons_m_given_intensity_j_rhs = -observed_count + lambda_num_photons_cut
 
     # Constraints on the number of $m$ photon states
     lb_num_photons_m_lhs = -np.eye(
@@ -401,7 +406,6 @@ def solve_finite_lp(  # noqa: PLR0913, PLR0917
                 probability_m_photon_state,
                 epsilon_num_photons_M,
             )
-            * number_of_pulses
         ),
         np.repeat(observed_total, max_num_photons + 1),
     )
@@ -907,6 +911,16 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
 
         gain, error_rate = compute_gain_and_error_rate(self.detector, mu, attenuation)
 
+        # The paper distinguishes N_X/N_Z (transmitted/sifted by basis)
+        # from n_X/n_Z (observed detections). Chernoff terms use N_B;
+        # Hoeffding and error-correction terms use n_B.
+        if n_X is None:
+            n_X_sent = float(probability_basis_X.sum() * self.number_of_pulses)
+            n_Z_sent = float(probability_basis_Z.sum() * self.number_of_pulses)
+        else:
+            n_X_sent = float(n_X)
+            n_Z_sent = float(self.number_of_pulses - n_X)
+
         # Compute number of detection events per intensity per basis
         if n_X is None:
             n_X_observed_per_intensity: NDArray[np.float64] = (
@@ -983,13 +997,13 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
                 probabilities_intensity_j=probability_basis_Z_normalized,
                 mu=mu,
                 max_num_photons=max_num_photons,
-                number_of_pulses=n_Z_observed,
+                number_of_pulses=n_Z_sent,
                 observed_count=n_Z_observed_per_intensity,
                 epsilon_mu_j=epsilon_intensity_j,
                 epsilon_num_photons_M=epsilon_num_photons_M,
                 epsilon_num_photons_M_in_basis_B=epsilon_num_photons_M_in_basis_B,
             )["x"][0:2]
-            * n_Z_observed
+            * n_Z_sent
         )
         (_, number_single_photon_errors_in_basis_Z) = (
             solve_finite_lp(
@@ -998,16 +1012,18 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
                 probabilities_intensity_j=probability_basis_Z_normalized,
                 mu=mu,
                 max_num_photons=max_num_photons,
-                number_of_pulses=n_Z_observed,
+                number_of_pulses=n_Z_sent,
                 observed_count=number_of_errors_per_intensity_basis_Z,
                 epsilon_mu_j=epsilon_intensity_j,
                 epsilon_num_photons_M=epsilon_num_photons_M,
                 epsilon_num_photons_M_in_basis_B=epsilon_num_photons_M_in_basis_B,
             )["x"][0:2]
-            * n_Z_observed
+            * n_Z_sent
         )
-        if number_single_photon_events_in_basis_Z == 0:
-            error_rate_single_photon_basis_Z = 1e-19
+        if number_single_photon_events_in_basis_Z <= 0:
+            # No lower bound on single-photon detections => no defensible
+            # low phase-error estimate; its entropy penalty is maximal.
+            error_rate_single_photon_basis_Z = 0.5
         else:
             error_rate_single_photon_basis_Z = np.clip(
                 number_single_photon_errors_in_basis_Z
@@ -1024,17 +1040,20 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
             target_vacuum=1,
             target_single=1
             - h(
-                error_rate_single_photon_basis_Z
-                + delta(
-                    n_X_observed,
-                    n_Z_observed,
-                    epsilon_single_photon,
+                min(
+                    error_rate_single_photon_basis_Z
+                    + delta(
+                        n_X_observed,
+                        n_Z_observed,
+                        epsilon_single_photon,
+                    ),
+                    0.5,
                 )
             ),
             probabilities_intensity_j=probability_basis_X_normalized,
             mu=mu,
             max_num_photons=max_num_photons,
-            number_of_pulses=n_X_observed,
+            number_of_pulses=n_X_sent,
             observed_count=n_X_observed_per_intensity,
             epsilon_mu_j=epsilon_intensity_j,
             epsilon_num_photons_M=epsilon_num_photons_M,
@@ -1044,7 +1063,7 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
         (
             number_vacuum_events_basis_X,
             number_single_events_basis_X,
-        ) = res["x"][0:2] * n_X_observed
+        ) = res["x"][0:2] * n_X_sent
 
         if np.isnan(res["fun"]) or np.isinf(res["fun"]):
             return _fallback_key_rate_estimate(
@@ -1058,11 +1077,14 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
             - number_single_events_basis_X
             * (
                 h(
-                    error_rate_single_photon_basis_Z
-                    + delta(
-                        n_X_observed,
-                        n_Z_observed,
-                        epsilon_1,
+                    min(
+                        error_rate_single_photon_basis_Z
+                        + delta(
+                            n_X_observed,
+                            n_Z_observed,
+                            epsilon_1,
+                        ),
+                        0.5,
                     )
                 )
             )
