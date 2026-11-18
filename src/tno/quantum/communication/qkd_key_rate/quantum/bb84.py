@@ -360,7 +360,7 @@ def solve_finite_lp(  # noqa: PLR0913, PLR0917
     # Compute the probability that a photon state is send out with more than
     # the defined maximum number of photons.
     tail_probability_maximum_photons = float(
-        scipy.stats.poisson.sf(max_num_photons + 1, mu).dot(probabilities_intensity_j)
+        scipy.stats.poisson.sf(max_num_photons, mu).dot(probabilities_intensity_j)
     )
 
     # Bound on the contribution for the number of photons above the cut
@@ -800,6 +800,37 @@ class BB84AsymptoticKeyRateEstimate(AsymptoticKeyRateEstimate):
         raise OptimizationError(error_msg)
 
 
+def _finite_bb84_failure_budget(
+    max_num_photons: int,
+    number_of_intensities: int,
+    epsilon_1: float,
+    epsilon_2: float,
+    epsilon_3: float,
+    epsilon_lp: float,
+) -> float:
+    """Conservative union bound for the three finite-key LPs, per Eq. (39).
+
+    We solve two Z-basis programs (event and error estimates) and one X-basis
+    program. Count each LP's photon-number, intensity, and tail bounds once,
+    even when their underlying random events overlap. This deliberately
+    overestimates the statistical failure probability.
+    """
+    photon_constraints = max_num_photons + 1
+    # Two Z-basis programs independently bound the event and error counts.
+    epsilon_e = 2 * (photon_constraints + number_of_intensities) * epsilon_lp
+    epsilon_x = (photon_constraints + number_of_intensities) * epsilon_lp
+    # Each LP has a truncated-photon tail bound for every intensity.
+    epsilon_truncation = 3 * number_of_intensities * epsilon_lp
+    return (
+        2 * epsilon_1
+        + epsilon_2
+        + epsilon_3
+        + epsilon_e
+        + epsilon_x
+        + epsilon_truncation
+    )
+
+
 class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
     """BB84 protocol with a finite number of pulses.
 
@@ -848,14 +879,14 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
         Returns:
             key-rate
         """
-        # Security parameters
-        probability_abort = 2e-50
-        epsilon_security = 2e-50
-        epsilon_correct = 2e-50
-        epsilon_1 = 2e-55
-        epsilon_2 = 2e-55
-        epsilon_3 = 2e-55
-        epsilon = 1e-7
+        # Security parameters from Attema et al. (2021), Section 6.2.
+        # The paper uses powers of two (2**-50, NOT 2e-50).
+        probability_abort = 2**-50
+        epsilon_security = 2**-50
+        epsilon_correct = 2**-50
+        epsilon_1 = 2**-55
+        epsilon_2 = 2**-55
+        epsilon_3 = 2**-55
 
         # The probabilities sum to 1, these are the conditional probabilities per basis
         probability_basis_X = np.asarray(probability_basis_X)
@@ -908,17 +939,30 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
             np.max((int(scipy.stats.poisson.isf(1e-16, mu).max()), 5))
         )
 
-        # Epsilon values to be considered in the optimization.
-        # Values for the intensities and the number of photons per pulse are used,
-        # as well as the number of photon per pulse given a basis
-        epsilon_single_photon = 1e-7
-        epsilon_intensity_j: NDArray[np.float64] = np.repeat(1e-8, mu.shape[0])
+        # Match the paper's LP confidence levels (Section 6.2) and count
+        # all three LP calls in the total secrecy budget of Eq. (39).
+        epsilon_single_photon = epsilon_1
+        epsilon_lp = 2**-60
+        epsilon_intensity_j: NDArray[np.float64] = np.repeat(
+            epsilon_lp, mu.shape[0]
+        )
         epsilon_num_photons_M: NDArray[np.float64] = np.repeat(
-            1e-8, int(max_num_photons + 1)
+            epsilon_lp, max_num_photons + 1
         )
         epsilon_num_photons_M_in_basis_B: NDArray[np.float64] = np.repeat(
-            1e-8, int(mu.shape[0])
+            epsilon_lp, mu.shape[0]
         )
+        epsilon = _finite_bb84_failure_budget(
+            max_num_photons,
+            len(mu),
+            epsilon_1,
+            epsilon_2,
+            epsilon_3,
+            epsilon_lp,
+        )
+        if not 0 < epsilon < epsilon_security:
+            error_msg = "Finite BB84 security failures exceed the secrecy budget."
+            raise ValueError(error_msg)
 
         # The probability of a single photon pulse for each of the intensities
         probability_single_photon_per_intensity: NDArray[np.float64] = (
