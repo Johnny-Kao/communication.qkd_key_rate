@@ -1283,5 +1283,44 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
                     args["attenuation"] += 1e-8
                     continue
                 return self._extract_parameters(res.x), float(rate)
+        # Recover from false negative local minima without changing the
+        # existing trust-constr success path or the physical objective.
+        seeds = [np.asarray(x0, dtype=float)]
+        if self.number_of_decoy == 1:
+            seeds.append(np.array([0.2, 0.01, 0.6, 0.2, 0.1, 0.1]))
+        for seed in seeds:
+            try:
+                alternative = scipy.optimize.minimize(
+                    self._f, seed, args={"attenuation": attenuation},
+                    method="SLSQP", jac="2-point",
+                    constraints=constraint, bounds=optimize_bounds,
+                    options={"maxiter": 1000, "ftol": 1e-12},
+                )
+            except OptimizationError:
+                continue
+            candidate = np.asarray(alternative.x, dtype=float)
+            rate = float(np.atleast_1d(-alternative.fun)[0])
+            tol = 1e-7
+            if not (
+                alternative.success and candidate.shape == x0.shape
+                and np.isfinite(candidate).all() and np.isfinite(rate)
+                and rate >= 0
+                and np.all(candidate >= lower_bound - tol)
+                and np.all(candidate <= upper_bound + tol)
+                and np.all(A @ candidate >= b - tol)
+                and np.all(A @ candidate <= B + tol)
+            ):
+                continue
+            params = self._extract_parameters(candidate)
+            try:
+                verified = float(np.asarray(
+                    self.compute_rate(attenuation=attenuation, **params)
+                ).item())
+            except OptimizationError:
+                continue
+            if np.isfinite(verified) and verified >= 0 and np.isclose(
+                rate, verified, rtol=1e-7, atol=1e-12
+            ):
+                return params, verified
         error_msg = "Unable to find solution for optimal key rate."
         raise OptimizationError(error_msg)
