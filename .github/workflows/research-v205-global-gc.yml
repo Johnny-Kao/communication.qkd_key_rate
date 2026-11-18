@@ -26,7 +26,10 @@ jobs:
           git log -1 --format='%H %s'
           python -c "from tno.quantum.communication.qkd_key_rate import __version__; print(__version__)"
       - name: Full native baseline tests (single run)
-        run: python -m pytest -q
+        continue-on-error: true  # Preserve genuine Linux failures; do not skip the candidate batch.
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee native_suite.log
       - name: Run all targeted anomaly probes together
         run: |
           python research/audit_v205_batch.py | tee audit_v205_batch.log
@@ -38,4 +41,5 @@ jobs:
           path: |
             audit_v205_results.json
             audit_v205_batch.log
+            native_suite.log
           if-no-files-found: warn
