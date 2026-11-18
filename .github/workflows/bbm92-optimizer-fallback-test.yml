@@ -1,0 +1,82 @@
+name: BBM92 optimizer fallback native red-green verification
+
+on:
+  push:
+    branches:
+      - research/bbm92-optimizer-fallback-gc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression-and-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install original project dependencies and record exact versions
+        run: |
+          python -m pip install -e '.[tests]'
+          python --version
+          git diff --check 7266c35
+          git diff --stat 7266c35 | tee patch_scope.log
+          python -m pip freeze | tee dependency_versions.log
+      - name: Verify patched optimizer and existing regression cases
+        run: |
+          set +e
+          python -m pytest -q \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bbm92_optimizer_fallback.py \
+            src/tno/quantum/communication/qkd_key_rate/test/classical/test_required_linktime.py \
+            | tee focused_patched.log
+          echo "${PIPESTATUS[0]}" > focused_patched.rc
+          exit 0
+      - name: Full native suite with candidate patch
+        run: |
+          set +e
+          python -m pytest -q | tee full_patched.log
+          echo "${PIPESTATUS[0]}" > full_patched.rc
+          exit 0
+      - name: Full unmodified v2.0.5 baseline on same runner
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/official-v205" 7266c35
+          set +e
+          (cd "$RUNNER_TEMP/official-v205" && PYTHONPATH="$RUNNER_TEMP/official-v205/src" python -m pytest -q) | tee full_official.log
+          echo "${PIPESTATUS[0]}" > full_official.rc
+          exit 0
+      - name: Archive full evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbm92-fallback-evidence-py${{ matrix.python-version }}
+          if-no-files-found: warn
+          path: |
+            patch_scope.log
+            dependency_versions.log
+            focused_patched.log
+            focused_patched.rc
+            full_patched.log
+            full_patched.rc
+            full_official.log
+            full_official.rc
+      - name: Fail on any patched verification failure
+        if: always()
+        run: |
+          focus_rc=$(cat focused_patched.rc)
+          full_rc=$(cat full_patched.rc)
+          baseline_rc=$(cat full_official.rc)
+          echo "Focused patched exit=$focus_rc; patched full exit=$full_rc; original full exit=$baseline_rc" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$focus_rc" -ne 0 ] || [ "$full_rc" -ne 0 ]; then
+            echo "Patch was NOT fully validated; see raw logs."
+            exit 1
+          fi
