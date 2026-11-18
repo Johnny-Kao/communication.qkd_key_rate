@@ -1,0 +1,41 @@
+name: QKD v2.0.5 one-shot global audit (research only)
+
+on:
+  push:
+    branches:
+      - research/qkd-v205-global-gc
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install official-package dependencies
+        run: python -m pip install -e '.[tests]'
+      - name: Confirm version and tested commit
+        run: |
+          git log -1 --format='%H %s'
+          python -c "from tno.quantum.communication.qkd_key_rate import __version__; print(__version__)"
+      - name: Full native baseline tests (single run)
+        run: python -m pytest -q
+      - name: Run all targeted anomaly probes together
+        run: |
+          python research/audit_v205_batch.py | tee audit_v205_batch.log
+      - name: Attach complete candidate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qkd-v205-one-shot-audit
+          path: |
+            audit_v205_results.json
+            audit_v205_batch.log
+          if-no-files-found: warn
