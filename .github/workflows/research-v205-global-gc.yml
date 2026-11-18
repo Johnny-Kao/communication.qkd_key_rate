@@ -12,12 +12,16 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install official-package dependencies
         run: python -m pip install -e '.[tests]'
@@ -30,16 +34,29 @@ jobs:
         run: |
           set -o pipefail
           python -m pytest -q | tee native_suite.log
-      - name: Run all targeted anomaly probes together
+      - name: Repeat optimizer-sensitive BBM92 native test
+        continue-on-error: true
         run: |
+          set -o pipefail
+          python -m pytest -q src/tno/quantum/communication/qkd_key_rate/test/classical/test_required_linktime.py | tee bbm92_repeat.log
+      - name: Run all 17 existing anomaly probes
+        run: |
+          set -o pipefail
           python research/audit_v205_batch.py | tee audit_v205_batch.log
+      - name: Run expanded cross-module invariant and A/B tests
+        run: |
+          set -o pipefail
+          python research/audit_v205_crossmodule.py | tee crossmodule_v205.log
       - name: Attach complete candidate evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qkd-v205-one-shot-audit
+          name: qkd-v205-global-gc-py${{ matrix.python-version }}
           path: |
             audit_v205_results.json
             audit_v205_batch.log
+            crossmodule_v205_results.json
+            crossmodule_v205.log
             native_suite.log
+            bbm92_repeat.log
           if-no-files-found: warn

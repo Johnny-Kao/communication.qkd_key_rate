@@ -4,7 +4,7 @@
 **Repo/branch:** Johnny-Kao fork, `research/qkd-v205-global-gc`.
 **Permission:** Research only. No code modification to TNO, no upstream submission, no PR.
 **Scope:** 18 non-test modules (quantum protocols, detectors, LP helpers, classical error-correction, privacy amplification and shared entropy), plus full native tests.
-**Environment:** one GitHub Actions-hosted Linux job, all synthetic inputs.
+**Environment:** one GitHub Actions run with an Ubuntu 24.04 matrix on **Python 3.12 and 3.13**. Each job independently executes the full upstream suite, repeats optimizer-sensitive BBM92 tests, runs all 17 earlier anomaly probes, and runs 14 additional cross-module invariant/A/B probes. Artifacts and suite failures are preserved per interpreter.
 
 ## Candidate-first verification matrix
 
@@ -27,6 +27,21 @@
 | C02 | Cascade prior error subrange | denominator full length | debug-only impact |
 | P01 | PrivacyAmplification SHAKE | fixed deterministic hash, output > entropy allowed | no proven information-theoretic PA guarantee |
 | M01 | Message mutation | accepts non-binary value | low priority unless reachable normally |
+
+## Extended cross-module tests
+
+`research/audit_v205_crossmodule.py` adds **14** independently reported probes:
+
+- X01: 120 randomized inverse-permutation and shortening invariants
+- X02–X04: Cascade end-to-end correction (three error regimes), subrange error-rate denominator, and exposed-bit accounting
+- X05–X06: Winnow full correction path, GF(2) syndrome disclosure rank and research-only correct-pivot deletion A/B
+- X07: Winnow Schedule progression
+- X08: PrivacyAmplification SHAKE deterministic output/entropy-contract observation
+- X09: Detector accepted stale efficiency → BB84 rate A/B
+- X10–X11: BBM92 explicit versus implicit `n_X` and finite-key entropy cap A/B
+- X12–X14: BB84 capped entropy rate A/B, auto Poisson cutoff omission, and linear-program bound relaxation comparison
+
+**Interpretation:** `VERIFIED_PASS` confirms only the tested invariant, not universal model correctness. `REPRODUCED_SIGNAL` flags an observed difference; `INCONCLUSIVE` and `HARNESS_ERROR` must not be treated as passes. CI runs both original and research probes against the **unmodified** v2.0.5 package. No production source patch is committed.
 
 ## Evaluation rules
 
