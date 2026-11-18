@@ -1,0 +1,131 @@
+name: QKD four-fix final pre-upstream evidence
+
+on:
+  push:
+    branches:
+      - gc/qkd-v205-final-preupstream
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline-versus-final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Pin evidence to reviewed four-commit content
+        run: |
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse 88b5287)"
+          test "$(git rev-list --count 7266c35..HEAD^)" = 4
+          git diff --check 7266c35 HEAD^
+          git diff --name-only HEAD^ HEAD | tee workflow_only_diff.txt
+          test "$(cat workflow_only_diff.txt)" = ".github/workflows/qkd-four-final-gc.yml"
+          python -m pip install -e '.[tests]'
+          python -m pip freeze | tee dependency_versions.log
+          git log --format='%h %s' --reverse 7266c35..HEAD^ | tee pr_four_commits.log
+      - name: Run every final PR-focused test, including independent BB84 LP and optimizer
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short \
+            src/tno/quantum/communication/qkd_key_rate/test/base/test_detector_consistency.py \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bbm92_nx_units.py \
+            src/tno/quantum/communication/qkd_key_rate/test/classical/test_winnow_discard_positions.py \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_security_budget_contract.py \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_paper_lp_independent.py \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_paper_lp_reference.py \
+            src/tno/quantum/communication/qkd_key_rate/test/quantum/test_bb84_finite_optimizer_recovery.py \
+            | tee final_focused.log
+      - name: Full native suite on final PR code
+        run: |
+          set +e
+          python -m pytest -q --tb=short | tee full_final.log
+          echo "${PIPESTATUS[0]}" > full_final.rc
+          exit 0
+      - name: Full native suite on unchanged official v2.0.5 on SAME runner
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/tno-original" 7266c35
+          set +e
+          (cd "$RUNNER_TEMP/tno-original" && PYTHONPATH="$RUNNER_TEMP/tno-original/src" python -m pytest -q --tb=short) | tee full_original.log
+          echo "${PIPESTATUS[0]}" > full_original.rc
+          exit 0
+      - name: Verify new tests are RED on official v2.0.5
+        run: |
+          set -e
+          base="$RUNNER_TEMP/tno-original"
+          for suite in base/test_detector_consistency.py quantum/test_bbm92_nx_units.py classical/test_winnow_discard_positions.py quantum/test_bb84_security_budget_contract.py quantum/test_bb84_paper_lp_independent.py quantum/test_bb84_paper_lp_reference.py; do
+            name="$(basename "$suite" .py)"
+            set +e
+            (cd "$base" && PYTHONPATH="$base/src" python -m pytest -q --tb=short "$GITHUB_WORKSPACE/src/tno/quantum/communication/qkd_key_rate/test/$suite") > "red_${name}.log" 2>&1
+            rc=$?
+            set -e
+            printf '%s\n' "$rc" > "red_${name}.rc"
+            tail -n 4 "red_${name}.log"
+            if [ "$rc" -ne 1 ] || ! grep -q 'FAILED ' "red_${name}.log"; then
+              echo "Expected genuine RED test failure for $suite, got $rc"
+              exit 1
+            fi
+          done
+      - name: Compare exact failure IDs and enforce no new failures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          def failures(filename):
+              log = Path(filename).read_text()
+              return set(re.findall(r'^(?:FAILED|ERROR)\s+(\S+)', log, re.MULTILINE))
+
+          orig = failures("full_original.log")
+          final = failures("full_final.log")
+          new = sorted(final - orig)
+          orig_rc = int(Path("full_original.rc").read_text().strip())
+          final_rc = int(Path("full_final.rc").read_text().strip())
+          report = [
+              f"Official original test exit code: {orig_rc}",
+              f"Final candidate test exit code: {final_rc}",
+              f"Official failure IDs: {sorted(orig)}",
+              f"Final failure IDs: {sorted(final)}",
+              f"NEW failure IDs: {new}",
+          ]
+          Path("native_comparison.txt").write_text("\n".join(report) + "\n")
+          print("\n".join(report))
+          with Path(__import__("os").environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+              f.write("\n".join(report) + "\n")
+          if final_rc not in (0, 1) or orig_rc not in (0, 1) or new:
+              sys.exit("Final candidate introduces a failure or an infrastructure error")
+          if final_rc == 1 and not final:
+              sys.exit("Unclassified candidate pytest error")
+          if any("test_finite_bb84" in x for x in final):
+              sys.exit("Finite BB84 regression remains")
+          PY
+      - name: Archive full GC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qkd-four-final-evidence-py${{ matrix.python-version }}
+          if-no-files-found: warn
+          path: |
+            workflow_only_diff.txt
+            dependency_versions.log
+            pr_four_commits.log
+            final_focused.log
+            full_final.log
+            full_final.rc
+            full_original.log
+            full_original.rc
+            native_comparison.txt
+            red_*.log
+            red_*.rc
