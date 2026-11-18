@@ -1285,16 +1285,22 @@ class BB84FiniteKeyRateEstimate(FiniteKeyRateEstimate):
                 return self._extract_parameters(res.x), float(rate)
         # Recover from false negative local minima without changing the
         # existing trust-constr success path or the physical objective.
-        seeds = [np.asarray(x0, dtype=float)]
-        if self.number_of_decoy == 1:
-            seeds.append(np.array([0.2, 0.01, 0.6, 0.2, 0.1, 0.1]))
+        n_intensities = self.number_of_decoy + 1
+        x_weights = np.linspace(3.0, 1.0, n_intensities)
+        x_weights *= 0.8 / x_weights.sum()
+        exploratory_start = np.hstack((
+            np.geomspace(0.2, 0.01, n_intensities),
+            x_weights,
+            np.full(n_intensities, 0.2 / n_intensities),
+        ))
+        seeds = [exploratory_start, np.asarray(x0, dtype=float)]
         for seed in seeds:
             try:
                 alternative = scipy.optimize.minimize(
                     self._f, seed, args={"attenuation": attenuation},
                     method="SLSQP", jac="2-point",
                     constraints=constraint, bounds=optimize_bounds,
-                    options={"maxiter": 1000, "ftol": 1e-12},
+                    options={"maxiter": 300, "ftol": 1e-12},
                 )
             except OptimizationError:
                 continue
