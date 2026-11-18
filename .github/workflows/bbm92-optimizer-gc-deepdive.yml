@@ -1,0 +1,45 @@
+name: BBM92 optimizer original-source GC diagnosis
+
+on:
+  push:
+    branches:
+      - research/bbm92-optimizer-gc-deepdive
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose-original:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install project
+        run: |
+          python -m pip install -e '.[tests]'
+          python -m pip freeze | tee dependency_versions.txt
+          git rev-parse HEAD
+          git diff --stat 7266c35 -- src/tno/quantum/communication/qkd_key_rate
+      - name: Trace unchanged official v2.0.5 BBM92 numerical optimizer
+        run: |
+          set -o pipefail
+          python research/diagnose_bbm92_optimizer.py | tee bbm92_optimizer_diagnostics.log
+      - name: Upload reproducible data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbm92-optimizer-diagnosis-py${{ matrix.python-version }}
+          if-no-files-found: warn
+          path: |
+            dependency_versions.txt
+            bbm92_optimizer_diagnostics.log
+            bbm92_optimizer_diagnostics.json
